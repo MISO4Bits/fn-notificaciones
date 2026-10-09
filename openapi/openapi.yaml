@@ -1,0 +1,116 @@
+openapi: 3.2.0
+info:
+  title: fn-notificaciones — envío de correos
+  version: 0.1.0
+  summary: Función serverless (Cloud Run) que envía los correos electrónicos de Solventa.
+  description: |
+    Una suscripción *push* de Pub/Sub, filtrada por `tipo = EnviarCorreo`, entrega aquí cada
+    mensaje. La función **no decide nada**: el asunto y los dos cuerpos (HTML y texto) llegan
+    ya rellenados por quien publica el evento (hoy CoreTransaccional, con la plantilla que
+    sirve Productos y Configuración de Mercado) y solo se entregan al proveedor de correo.
+
+    **Quién publica:** CoreTransaccional (`bienvenida` y `verificacion-correo` del registro,
+    BITS-93). Cualquier componente puede publicar `EnviarCorreo` para un correo nuevo.
+
+    **Confirmación de mensajes (cómo reacciona Pub/Sub):**
+    - `204`: el correo salió, o el mensaje no tiene arreglo (mal formado, rechazado por el
+      proveedor) y se descarta con un error en el log. Pub/Sub lo da por entregado.
+    - `503`: el envío falló tras varios intentos por algo transitorio (proveedor caído, límite
+      de tasa, credenciales). Pub/Sub lo reentrega con espera creciente.
+
+    **Trazabilidad:** el `traceparent` (W3C) viaja en los atributos del mensaje; el envío queda
+    en el mismo trace que el registro que lo originó.
+
+    **Duplicados:** Pub/Sub entrega *al menos una vez*. El `id` del evento se envía al
+    proveedor como clave de idempotencia, así una reentrega no manda el correo dos veces.
+
+servers:
+  - url: https://fn-notificaciones.internal
+    description: Cloud Run, sin acceso público (solo la cuenta de servicio de la suscripción).
+
+tags:
+  - name: Pub/Sub
+    description: Entrada de la suscripción push.
+
+paths:
+  /:
+    post:
+      operationId: recibirMensaje
+      tags: [Pub/Sub]
+      summary: Recibe un mensaje de la suscripción push y envía el correo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SobrePush' }
+      responses:
+        '204':
+          description: Mensaje confirmado (correo enviado o mensaje descartado sin arreglo).
+        '503':
+          description: El envío falló; Pub/Sub debe reentregar el mensaje.
+
+components:
+  schemas:
+    SobrePush:
+      description: Sobre estándar de una suscripción push de Pub/Sub.
+      type: object
+      required: [message]
+      properties:
+        subscription: { type: string }
+        message:
+          type: object
+          required: [data]
+          properties:
+            data:
+              type: string
+              contentEncoding: base64
+              description: El evento `EnviarCorreo` en JSON, codificado en base64.
+            attributes:
+              type: object
+              additionalProperties: { type: string }
+              description: Incluye `tipo` y el `traceparent` de la traza.
+            messageId: { type: string }
+
+    EventoEnviarCorreo:
+      description: Contenido de `message.data` (una vez decodificado).
+      type: object
+      required: [tipo, datos]
+      properties:
+        tipo: { type: string, const: EnviarCorreo }
+        id:
+          type: string
+          description: Identificador único del evento; se usa como clave de idempotencia.
+        ocurridoEn: { type: string, format: date-time }
+        datos: { $ref: '#/components/schemas/DatosEnviarCorreo' }
+      examples:
+        - tipo: EnviarCorreo
+          id: 3f2b8a52-6c0e-4d8e-9a7e-1c5d2f9b7a10
+          ocurridoEn: '2026-10-08T21:30:00Z'
+          datos:
+            destinatario: ana.rios@example.com
+            plantilla: verificacion-correo
+            plantillaVersion: V1
+            clienteId: 7b1d3c2e-0f4a-4b8e-9c55-2a1e6d9f0b34
+            asunto: Confirma tu correo en Solventa
+            cuerpoHtml: '<p>Hola Ana</p><a href="https://solventa4bits.com/verificar-correo?oobCode=AbCd">Confirmar</a>'
+            cuerpoTexto: 'Hola Ana: https://solventa4bits.com/verificar-correo?oobCode=AbCd'
+
+    DatosEnviarCorreo:
+      type: object
+      required: [destinatario, asunto, cuerpoHtml, cuerpoTexto, plantilla]
+      properties:
+        destinatario: { type: string, format: email, maxLength: 254 }
+        asunto:
+          type: string
+          minLength: 1
+          maxLength: 998
+          pattern: '^[^\r\n]+$'
+          description: Una sola línea (es un encabezado de correo).
+        cuerpoHtml: { type: string, minLength: 1 }
+        cuerpoTexto: { type: string, minLength: 1 }
+        plantilla:
+          type: string
+          maxLength: 64
+          description: Nombre de la plantilla de origen; solo para trazabilidad.
+        plantillaVersion: { type: string, description: Versión de la plantilla de origen. }
+        clienteId: { type: string, maxLength: 64 }
