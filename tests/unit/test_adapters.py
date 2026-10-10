@@ -224,5 +224,5 @@ async def test_resend_enmascara_varias_direcciones_y_resiste_entradas_patologica
     with caplog.at_level(logging.INFO), pytest.raises(EnvioRechazado):
         await sender.enviar(CORREO)
 
-    assert "***, ***; ***" in caplog.text
+    assert "***, ***; *** ***" in caplog.text
     assert "c.d@e.org" not in caplog.text
