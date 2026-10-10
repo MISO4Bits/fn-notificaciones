@@ -14,8 +14,11 @@ class MensajePubSub(_Model):
     data: str = ""
     attributes: dict[str, str] = Field(default_factory=dict)
     message_id: str = ""
+    publish_time: str | None = None
 
 
 class SobrePush(_Model):
     message: MensajePubSub
     subscription: str | None = None
+    # Solo viene si la suscripción tiene cola de mensajes fallidos (la nuestra la tiene).
+    delivery_attempt: int | None = None

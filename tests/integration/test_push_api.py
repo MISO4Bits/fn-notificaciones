@@ -125,3 +125,35 @@ async def test_al_apagar_se_cierra_el_proveedor_de_correo(settings, monkeypatch)
         pass
 
     assert cerrado == [True]
+
+
+async def test_el_recorrido_de_un_mensaje_queda_registrado_sin_datos_personales(client, caplog):
+    sobre = sobre_push(EVENTO_VALIDO)
+    sobre["deliveryAttempt"] = 2
+    sobre["message"]["publishTime"] = "2026-10-10T10:20:05Z"
+
+    with caplog.at_level(logging.INFO):
+        resp = await client.post("/", json=sobre)
+
+    assert resp.status_code == 204
+    assert "mensaje recibido" in caplog.text
+    assert "intento_entrega=2 publicado=2026-10-10T10:20:05Z" in caplog.text
+    assert "correo a enviar plantilla=" in caplog.text
+    assert "destino_dominio=example.com" in caplog.text
+    assert "mensaje procesado" in caplog.text
+    assert "resultado=enviado" in caplog.text
+    assert "ana.rios" not in caplog.text
+
+
+async def test_un_mensaje_ignorado_y_uno_a_reintentar_registran_su_resultado(app, client, caplog):
+    with caplog.at_level(logging.INFO):
+        await client.post("/", json=sobre_push({**EVENTO_VALIDO, "tipo": "ClienteRegistrado"}))
+    assert "resultado=ignorado" in caplog.text
+
+    caplog.clear()
+    app.state.service._sender = SenderEspia(*[EnvioTransitorio("503")] * 3)
+    with caplog.at_level(logging.INFO):
+        resp = await client.post("/", json=sobre_push(EVENTO_VALIDO))
+    assert resp.status_code == 503
+    assert "mensaje se devuelve a Pub/Sub" in caplog.text
+    assert "resultado=reintentar" in caplog.text

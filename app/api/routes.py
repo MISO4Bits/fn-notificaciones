@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response, status
@@ -34,13 +35,37 @@ async def recibir_mensaje(sobre: SobrePush, request: Request, service: ServiceDe
     Un mensaje que nunca podrá enviarse (mal formado, rechazado por el proveedor) se
     confirma igual, registrando el error: devolverlo solo lo haría circular sin fin.
     """
+    mensaje = sobre.message
+    # Solo nombres de atributos y el tipo de evento: ningún dato del cliente.
+    logger.info(
+        "mensaje recibido id=%s intento_entrega=%s publicado=%s tipo=%s "
+        "atributos=%s bytes_base64=%s",
+        mensaje.message_id,
+        sobre.delivery_attempt if sobre.delivery_attempt is not None else "-",
+        mensaje.publish_time or "-",
+        mensaje.attributes.get("tipo", "-"),
+        sorted(mensaje.attributes),
+        len(mensaje.data),
+    )
+    inicio = time.perf_counter()
+    resultado = "error"
     try:
-        contenido = decodificar(sobre.message.data)
-        await service.procesar(contenido, sobre.message.attributes, sobre.message.message_id)
+        contenido = decodificar(mensaje.data)
+        enviado = await service.procesar(contenido, mensaje.attributes, mensaje.message_id)
+        resultado = "enviado" if enviado else "ignorado"
     except (MensajeInvalido, EnvioRechazado) as exc:
-        logger.error("mensaje descartado id=%s motivo=%s", sobre.message.message_id, exc)
-    except EnvioTransitorio:
+        resultado = "descartado"
+        logger.error("mensaje descartado id=%s motivo=%s", mensaje.message_id, exc)
+    except EnvioTransitorio as exc:
+        resultado = "reintentar"
+        logger.warning("mensaje se devuelve a Pub/Sub id=%s motivo=%s", mensaje.message_id, exc)
         return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
     finally:
+        logger.info(
+            "mensaje procesado id=%s resultado=%s duracion_ms=%d",
+            mensaje.message_id,
+            resultado,
+            (time.perf_counter() - inicio) * 1000,
+        )
         vaciar(request.app.state.telemetry)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
