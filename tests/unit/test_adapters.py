@@ -123,3 +123,93 @@ def test_resend_exige_la_clave_de_api():
 def test_la_fabrica_rechaza_un_backend_desconocido():
     with pytest.raises(ValueError, match="no soportado"):
         build_sender(Settings(sender_backend="paloma"))
+
+
+async def test_resend_aceptado_registra_su_id_y_la_latencia(caplog):
+    sender = _sender(lambda _r: httpx.Response(200, json={"id": "re-123"}))
+
+    with caplog.at_level(logging.INFO):
+        await sender.enviar(CORREO)
+
+    assert "resend: enviando plantilla=bienvenida correo_id=evento-1" in caplog.text
+    assert "destino_dominio=example.com" in caplog.text
+    assert "remitente_dominio=notificaciones.solventa4bits.com" in caplog.text
+    assert "reply_to=si" in caplog.text
+    assert "resend: aceptado" in caplog.text
+    assert "resend_id=re-123" in caplog.text
+    assert "latencia_ms=" in caplog.text
+
+
+async def test_resend_rechazo_registra_el_codigo_y_enmascara_las_direcciones(caplog):
+    cuerpo = {
+        "name": "validation_error",
+        "message": "Invalid `to` field: ana.rios@example.com is not allowed",
+    }
+    sender = _sender(lambda _r: httpx.Response(422, json=cuerpo))
+
+    with caplog.at_level(logging.INFO), pytest.raises(EnvioRechazado) as error:
+        await sender.enviar(CORREO)
+
+    assert str(error.value) == "Resend rechazó el correo (422 validation_error)"
+    assert "estado=422 codigo=validation_error" in caplog.text
+    assert "Invalid `to` field: *** is not allowed" in caplog.text
+    assert "ana.rios" not in caplog.text
+
+
+async def test_resend_rechazo_con_cuerpo_desconocido_no_registra_texto_ajeno(caplog):
+    for respuesta in (
+        httpx.Response(422, text="<html>ana.rios@example.com</html>"),
+        httpx.Response(422, json=["ana.rios@example.com"]),
+        httpx.Response(422, json={"name": "Nombre con espacios", "message": 7}),
+    ):
+        caplog.clear()
+        sender = _sender(lambda _r, r=respuesta: r)
+
+        with caplog.at_level(logging.INFO), pytest.raises(EnvioRechazado) as error:
+            await sender.enviar(CORREO)
+
+        assert str(error.value) == "Resend rechazó el correo (422)"
+        assert "codigo=- mensaje=-" in caplog.text
+        assert "ana.rios" not in caplog.text
+
+
+async def test_resend_recorta_el_mensaje_de_error_largo(caplog):
+    sender = _sender(lambda _r: httpx.Response(422, json={"name": "x_y", "message": "a" * 1000}))
+
+    with caplog.at_level(logging.INFO), pytest.raises(EnvioRechazado):
+        await sender.enviar(CORREO)
+
+    assert "a" * 300 in caplog.text
+    assert "a" * 301 not in caplog.text
+
+
+async def test_resend_aceptado_con_cuerpo_inesperado_usa_guion_como_id(caplog):
+    for respuesta in (httpx.Response(200, text="ok"), httpx.Response(200, json=[1])):
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            await _sender(lambda _r, r=respuesta: r).enviar(CORREO)
+        assert "resend_id=-" in caplog.text
+
+
+async def test_resend_falla_de_red_registra_el_tipo_de_error(caplog):
+    def handler(request):
+        raise httpx.ConnectError("sin red")
+
+    with caplog.at_level(logging.INFO), pytest.raises(EnvioTransitorio):
+        await _sender(handler).enviar(CORREO)
+
+    assert "resend: sin respuesta" in caplog.text
+    assert "error=ConnectError" in caplog.text
+
+
+async def test_resend_sin_reply_to_ni_arroba_en_el_remitente_se_registra_sin_fallar(caplog):
+    cliente = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _r: httpx.Response(200, json={}))
+    )
+    sender = ResendEmailSender("re_clave", "Solventa", None, client=cliente)
+
+    with caplog.at_level(logging.INFO):
+        await sender.enviar(CORREO)
+
+    assert "remitente_dominio=?" in caplog.text
+    assert "reply_to=no" in caplog.text

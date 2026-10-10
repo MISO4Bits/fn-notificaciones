@@ -39,6 +39,16 @@ class NotificacionesService:
         if correo is None:
             logger.info("mensaje ignorado: no es un EnviarCorreo")
             return False
+        # cliente_id es un UUID opaco; del destinatario solo el dominio.
+        logger.info(
+            "correo a enviar plantilla=%s correo_id=%s cliente_id=%s destino_dominio=%s "
+            "traceparent=%s",
+            correo.plantilla,
+            correo.id,
+            correo.cliente_id or "-",
+            correo.destinatario.rsplit("@", 1)[-1],
+            "si" if "traceparent" in atributos else "no",
+        )
 
         # El traceparent viaja en los atributos del mensaje (lo inyecta CoreTransaccional):
         # el envío queda en el mismo trace que el registro que lo originó.
