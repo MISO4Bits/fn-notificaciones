@@ -19,7 +19,9 @@ _REINTENTABLES = {429}
 # Pub/Sub para que se entregue de nuevo cuando se corrija, en vez de perderlo.
 _CONFIGURACION = {401, 403}
 
-_DIRECCION = re.compile(r"[^\s<>\"',;]+@[^\s<>\"',;]+")
+# `@` queda fuera de las clases: así cada `@` solo puede coincidir una vez y la
+# expresión es lineal (sin retroceso excesivo).
+_DIRECCION = re.compile(r"[^\s<>\"',;@]+@[^\s<>\"',;@]+")
 _CODIGO_ERROR = re.compile(r"^[a-z0-9_]{1,64}$")
 _MAX_MENSAJE = 300
 
