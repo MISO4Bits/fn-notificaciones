@@ -213,3 +213,16 @@ async def test_resend_sin_reply_to_ni_arroba_en_el_remitente_se_registra_sin_fal
 
     assert "remitente_dominio=?" in caplog.text
     assert "reply_to=no" in caplog.text
+
+
+async def test_resend_enmascara_varias_direcciones_y_resiste_entradas_patologicas(caplog):
+    mensaje = "a@b.co, c.d@e.org; x@y.z " + "@" * 2000 + " " + "a" * 5000
+    sender = _sender(
+        lambda _r: httpx.Response(422, json={"name": "validation_error", "message": mensaje})
+    )
+
+    with caplog.at_level(logging.INFO), pytest.raises(EnvioRechazado):
+        await sender.enviar(CORREO)
+
+    assert "***, ***; *** ***" in caplog.text
+    assert "c.d@e.org" not in caplog.text

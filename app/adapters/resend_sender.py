@@ -19,7 +19,9 @@ _REINTENTABLES = {429}
 # Pub/Sub para que se entregue de nuevo cuando se corrija, en vez de perderlo.
 _CONFIGURACION = {401, 403}
 
-_DIRECCION = re.compile(r"[^\s<>\"',;]+@[^\s<>\"',;]+")
+# Separadores entre "palabras". El texto se parte en tokens y se enmascara el que lleva
+# `@` (en vez de una expresión que busque `algo@algo`, que es cuadrática sin ancla).
+_SEPARADORES = re.compile(r"([\s<>\"',;]+)")
 _CODIGO_ERROR = re.compile(r"^[a-z0-9_]{1,64}$")
 _MAX_MENSAJE = 300
 
@@ -27,6 +29,15 @@ _MAX_MENSAJE = 300
 def _dominio(direccion: str) -> str:
     """Solo el dominio de una dirección (`Nombre <a@b.com>` o `a@b.com`): no es dato personal."""
     return direccion.rsplit("@", 1)[-1].strip(" >") if "@" in direccion else "?"
+
+
+def _enmascarar_direcciones(texto: str) -> str:
+    """Reemplaza por ``***`` todo token que lleve ``@`` (direcciones de correo).
+
+    Conservador a propósito: un token como ``@@@`` también se enmascara. Los
+    separadores (espacios, comas, comillas…) se conservan tal cual.
+    """
+    return "".join("***" if "@" in parte else parte for parte in _SEPARADORES.split(texto))
 
 
 def _detalle_error(respuesta: httpx.Response) -> tuple[str, str]:
@@ -46,7 +57,7 @@ def _detalle_error(respuesta: httpx.Response) -> tuple[str, str]:
     codigo = cuerpo.get("name")
     codigo = codigo if isinstance(codigo, str) and _CODIGO_ERROR.match(codigo) else ""
     mensaje = cuerpo.get("message")
-    mensaje = _DIRECCION.sub("***", mensaje)[:_MAX_MENSAJE] if isinstance(mensaje, str) else ""
+    mensaje = _enmascarar_direcciones(mensaje)[:_MAX_MENSAJE] if isinstance(mensaje, str) else ""
     return codigo, mensaje
 
 

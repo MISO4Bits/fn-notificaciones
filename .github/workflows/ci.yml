@@ -136,3 +136,41 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+
+  # Despliega la función en dev: actualiza la imagen del servicio de Cloud Run con
+  # el tag inmutable (sha-<corto>) recién publicado. Solo desde develop. Terraform
+  # (iac-gcp-dev) crea el servicio y ya no revierte su imagen; el CI tiene permiso
+  # mínimo sobre este servicio (roles/run.developer). Si el ambiente no está
+  # aprovisionado (se destruye por sesión), el paso se omite sin fallar.
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    needs: image
+    if: github.ref == 'refs/heads/develop' && github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      id-token: write # requerido por google-github-actions/auth (WIF)
+    env:
+      DEPLOY_PROJECT: solventa-dev
+      DEPLOY_REGION: southamerica-east1
+      DEPLOY_SERVICE: fn-notificaciones
+    steps:
+      - id: auth
+        name: Autenticar contra GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Desplegar la imagen nueva
+        run: |
+          if ! gcloud run services describe "${DEPLOY_SERVICE}" \
+              --project "${DEPLOY_PROJECT}" --region "${DEPLOY_REGION}" >/dev/null 2>&1; then
+            echo "El servicio ${DEPLOY_SERVICE} no existe en ${DEPLOY_PROJECT} (ambiente destruido): se omite el despliegue."
+            exit 0
+          fi
+          gcloud run services update "${DEPLOY_SERVICE}" \
+            --project "${DEPLOY_PROJECT}" --region "${DEPLOY_REGION}" \
+            --image "${IMAGE}:sha-${{ needs.image.outputs.sha_short }}"
