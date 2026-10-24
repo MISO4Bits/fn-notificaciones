@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, Response
 
-from app.adapters.factory import build_sender
+from app.adapters.factory import build_lector, build_sender
 from app.api.routes import router
 from app.config import Settings, get_settings
 from app.logging_utils import SinRuidoDeHealthCheck
@@ -26,7 +26,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     telemetry = setup_telemetry(settings)
     sender = build_sender(settings)
-    service = NotificacionesService(sender, intentos=settings.intentos_envio)
+    service = NotificacionesService(
+        sender,
+        intentos=settings.intentos_envio,
+        lector=build_lector(settings),
+        bucket_permitido=settings.adjuntos_bucket,
+        max_adjuntos_bytes=settings.adjuntos_max_bytes,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):

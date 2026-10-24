@@ -114,3 +114,19 @@ components:
           description: Nombre de la plantilla de origen; solo para trazabilidad.
         plantillaVersion: { type: string, description: Versión de la plantilla de origen. }
         clienteId: { type: string, maxLength: 64 }
+        adjuntos:
+          type: array
+          maxItems: 3
+          description: |
+            Archivos que ya están en el bucket de adjuntos (`FN_ADJUNTOS_BUCKET`) y deben viajar
+            con el correo, por ejemplo el PDF de la póliza. La función los lee y los adjunta; el
+            evento solo lleva la referencia. Si el bucket no es el permitido el mensaje se
+            descarta; si el archivo todavía no está o no hay bucket configurado, se reentrega.
+          items:
+            type: object
+            required: [nombre, bucket, objeto]
+            properties:
+              nombre: { type: string, maxLength: 120, description: 'Nombre con el que llega el archivo, sin rutas.' }
+              bucket: { type: string }
+              objeto: { type: string, description: 'Ruta del archivo en el bucket.' }
+              contentType: { type: string, default: application/pdf }

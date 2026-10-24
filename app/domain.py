@@ -32,6 +32,23 @@ class EnvioTransitorio(Exception):
 
 
 @dataclass(frozen=True)
+class ReferenciaAdjunto:
+    """Un archivo que ya está en el bucket y debe viajar adjunto (p. ej. el PDF de la póliza)."""
+
+    nombre: str
+    bucket: str
+    objeto: str
+    content_type: str
+
+
+@dataclass(frozen=True)
+class Adjunto:
+    nombre: str
+    content_type: str
+    contenido: bytes
+
+
+@dataclass(frozen=True)
 class Correo:
     id: str
     destinatario: str
@@ -40,6 +57,22 @@ class Correo:
     cuerpo_texto: str
     plantilla: str
     cliente_id: str | None = None
+    # Lo que pide el evento: referencias a archivos del bucket. El servicio las lee y deja
+    # los bytes en ``adjuntos``, que es lo único que ve el proveedor de correo.
+    referencias_adjuntos: tuple[ReferenciaAdjunto, ...] = ()
+    adjuntos: tuple[Adjunto, ...] = ()
+
+
+class _AdjuntoIn(BaseModel):
+    """Un adjunto del evento: dónde está el archivo y cómo se llamará en el correo."""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
+
+    # Solo el nombre del archivo: sin rutas ni caracteres de control.
+    nombre: str = Field(min_length=1, max_length=120, pattern=r"^[\w][\w .()-]*$")
+    bucket: str = Field(min_length=3, max_length=222, pattern=r"^[a-z0-9][a-z0-9._-]*$")
+    objeto: str = Field(min_length=1, max_length=1024, pattern=r"^[^\r\n]+$")
+    content_type: str = Field(default="application/pdf", max_length=100)
 
 
 class _Datos(BaseModel):
@@ -53,6 +86,7 @@ class _Datos(BaseModel):
     cuerpo_texto: str = Field(min_length=1)
     plantilla: str = Field(min_length=1, max_length=64)
     cliente_id: str | None = Field(default=None, max_length=64)
+    adjuntos: list[_AdjuntoIn] = Field(default_factory=list, max_length=3)
 
 
 class _Evento(BaseModel):
@@ -94,6 +128,9 @@ def parsear_evento(contenido: bytes, id_mensaje: str) -> Correo | None:
         cuerpo_texto=d.cuerpo_texto,
         plantilla=d.plantilla,
         cliente_id=d.cliente_id,
+        referencias_adjuntos=tuple(
+            ReferenciaAdjunto(a.nombre, a.bucket, a.objeto, a.content_type) for a in d.adjuntos
+        ),
     )
 
 

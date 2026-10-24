@@ -58,3 +58,11 @@ curl -i -X POST http://localhost:8200/ -H 'content-type: application/json' \
 pytest --cov=app          # gate de cobertura: 80 %
 ruff check . && ruff format --check .
 ```
+
+## Adjuntos (BITS-101)
+
+El evento puede traer `adjuntos`: referencias a archivos de un bucket privado (`FN_ADJUNTOS_BUCKET`),
+por ejemplo el PDF de la póliza que genera `fn-documentos`. La función los lee del bucket y los
+manda adjuntos (máximo 10 MiB en total, `FN_ADJUNTOS_MAX_BYTES`). Solo lee del bucket configurado: un
+evento no puede pedirle archivos de cualquier otro. Su cuenta de servicio necesita
+`roles/storage.objectViewer` sobre ese bucket.
