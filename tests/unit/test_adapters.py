@@ -226,3 +226,53 @@ async def test_resend_enmascara_varias_direcciones_y_resiste_entradas_patologica
 
     assert "***, ***; *** ***" in caplog.text
     assert "c.d@e.org" not in caplog.text
+
+
+async def test_resend_envia_los_adjuntos_en_base64():
+    from app.domain import Adjunto
+
+    pedidos: list[httpx.Request] = []
+
+    def handler(request):
+        pedidos.append(request)
+        return httpx.Response(200, json={"id": "abc"})
+
+    con_adjunto = Correo(
+        id="evento-2",
+        destinatario="ana.rios@example.com",
+        asunto="Tu póliza",
+        cuerpo_html="<p>Adjunta</p>",
+        cuerpo_texto="Adjunta",
+        plantilla="poliza-emitida",
+        adjuntos=(Adjunto("Poliza-1.pdf", "application/pdf", b"%PDF-1.4"),),
+    )
+
+    await _sender(handler).enviar(con_adjunto)
+
+    import base64
+
+    assert json.loads(pedidos[0].content)["attachments"] == [
+        {
+            "filename": "Poliza-1.pdf",
+            "content": base64.b64encode(b"%PDF-1.4").decode(),
+            "content_type": "application/pdf",
+        }
+    ]
+
+
+async def test_resend_sin_adjuntos_no_manda_el_campo():
+    pedidos: list[httpx.Request] = []
+
+    def handler(request):
+        pedidos.append(request)
+        return httpx.Response(200, json={"id": "abc"})
+
+    await _sender(handler).enviar(CORREO)
+
+    assert "attachments" not in json.loads(pedidos[0].content)
+
+
+def test_sin_bucket_de_adjuntos_no_hay_lector():
+    from app.adapters.factory import build_lector
+
+    assert build_lector(Settings()) is None

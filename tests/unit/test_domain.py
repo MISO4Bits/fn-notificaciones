@@ -96,3 +96,63 @@ def test_el_motivo_del_rechazo_no_repite_datos_personales():
         parsear_evento(_evento(destinatario="persona-privada-sin-arroba"), "m")
     assert "persona-privada" not in str(error.value)
     assert "destinatario" in str(error.value)
+
+
+# --- adjuntos (BITS-101) ---
+
+ADJUNTO = {
+    "nombre": "Poliza-SOL-VH-2026-K7M2Q9.pdf",
+    "bucket": "solventa-dev-polizas",
+    "objeto": "polizas/7c0f2a52.pdf",
+    "contentType": "application/pdf",
+}
+
+
+def test_un_evento_sin_adjuntos_no_trae_referencias():
+    correo = parsear_evento(_evento(), "m")
+
+    assert correo.referencias_adjuntos == ()
+    assert correo.adjuntos == ()
+
+
+def test_las_referencias_de_adjuntos_se_leen_del_evento():
+    correo = parsear_evento(_evento(adjuntos=[ADJUNTO]), "m")
+
+    [ref] = correo.referencias_adjuntos
+    assert (ref.nombre, ref.bucket, ref.objeto, ref.content_type) == (
+        "Poliza-SOL-VH-2026-K7M2Q9.pdf",
+        "solventa-dev-polizas",
+        "polizas/7c0f2a52.pdf",
+        "application/pdf",
+    )
+
+
+def test_el_tipo_del_adjunto_es_pdf_si_no_se_indica():
+    sin_tipo = {k: v for k, v in ADJUNTO.items() if k != "contentType"}
+
+    ref = parsear_evento(_evento(adjuntos=[sin_tipo]), "m").referencias_adjuntos[0]
+
+    assert ref.content_type == "application/pdf"
+
+
+@pytest.mark.parametrize(
+    "cambio",
+    [
+        {"nombre": "../secreto.pdf"},
+        {"nombre": "a/b.pdf"},
+        {"nombre": ""},
+        {"nombre": "x\r\ny.pdf"},
+        {"bucket": "Bucket Con Espacios"},
+        {"bucket": "ab"},
+        {"objeto": ""},
+        {"objeto": "a\nb"},
+    ],
+)
+def test_un_adjunto_mal_formado_invalida_el_mensaje(cambio):
+    with pytest.raises(MensajeInvalido):
+        parsear_evento(_evento(adjuntos=[{**ADJUNTO, **cambio}]), "m")
+
+
+def test_no_se_admiten_mas_de_tres_adjuntos():
+    with pytest.raises(MensajeInvalido):
+        parsear_evento(_evento(adjuntos=[ADJUNTO] * 4), "m")

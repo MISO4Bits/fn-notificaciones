@@ -101,3 +101,118 @@ async def test_el_envio_ocurre_dentro_del_trace_de_los_atributos_del_mensaje():
     await _servicio(Espia()).procesar(CONTENIDO, {"traceparent": TRACEPARENT}, "m-1")
 
     assert vistos == [0x0AF7651916CD43DD8448EB211C80319C]
+
+
+# --- adjuntos (BITS-101) ---
+
+REFERENCIA = {
+    "nombre": "Poliza-1.pdf",
+    "bucket": "bucket-polizas",
+    "objeto": "polizas/1.pdf",
+    "contentType": "application/pdf",
+}
+CON_ADJUNTO = json.dumps(
+    {**EVENTO_VALIDO, "datos": {**EVENTO_VALIDO["datos"], "adjuntos": [REFERENCIA]}}
+).encode()
+
+
+class LectorEspia:
+    """Doble del puerto de lectura: devuelve el contenido programado y anota lo pedido."""
+
+    def __init__(self, contenido: bytes = b"%PDF-1.4 contenido", error: Exception | None = None):
+        self.contenido = contenido
+        self.error = error
+        self.pedidos: list[tuple[str, int]] = []
+
+    async def leer(self, referencia, max_bytes):
+        from app.domain import Adjunto
+
+        self.pedidos.append((referencia.objeto, max_bytes))
+        if self.error:
+            raise self.error
+        return Adjunto(referencia.nombre, referencia.content_type, self.contenido)
+
+
+def _con_lector(sender, lector, **kwargs):
+    return NotificacionesService(
+        sender,
+        lector=lector,
+        bucket_permitido=kwargs.pop("bucket", "bucket-polizas"),
+        **kwargs,
+    )
+
+
+async def test_el_correo_sale_con_el_archivo_del_bucket_adjunto():
+    sender, lector = SenderEspia(), LectorEspia()
+
+    await _con_lector(sender, lector).procesar(CON_ADJUNTO, {}, "m-1")
+
+    [correo] = sender.enviados
+    [adjunto] = correo.adjuntos
+    assert (adjunto.nombre, adjunto.content_type) == ("Poliza-1.pdf", "application/pdf")
+    assert adjunto.contenido == b"%PDF-1.4 contenido"
+    assert lector.pedidos == [("polizas/1.pdf", 10 * 1024 * 1024)]
+
+
+async def test_sin_adjuntos_no_se_toca_el_bucket():
+    sender, lector = SenderEspia(), LectorEspia()
+
+    await _con_lector(sender, lector).procesar(CONTENIDO, {}, "m-1")
+
+    assert lector.pedidos == []
+    assert sender.enviados[0].adjuntos == ()
+
+
+async def test_un_bucket_no_permitido_se_rechaza_sin_leer_nada():
+    sender, lector = SenderEspia(), LectorEspia()
+
+    with pytest.raises(EnvioRechazado):
+        await _con_lector(sender, lector, bucket="otro-bucket").procesar(CON_ADJUNTO, {}, "m-1")
+
+    assert lector.pedidos == []
+    assert sender.enviados == []
+
+
+@pytest.mark.parametrize("lector", [None, "sin_bucket"])
+async def test_sin_configuracion_de_adjuntos_se_reentrega(lector):
+    sender = SenderEspia()
+    servicio = (
+        NotificacionesService(sender, lector=None, bucket_permitido="bucket-polizas")
+        if lector is None
+        else NotificacionesService(sender, lector=LectorEspia(), bucket_permitido=None)
+    )
+
+    with pytest.raises(EnvioTransitorio):
+        await servicio.procesar(CON_ADJUNTO, {}, "m-1")
+
+    assert sender.enviados == []
+
+
+async def test_si_el_archivo_no_esta_todavia_el_mensaje_se_reentrega():
+    sender = SenderEspia()
+    lector = LectorEspia(error=EnvioTransitorio("todavía no aparece"))
+
+    with pytest.raises(EnvioTransitorio):
+        await _con_lector(sender, lector).procesar(CON_ADJUNTO, {}, "m-1")
+
+    assert sender.enviados == []
+
+
+async def test_el_tamano_que_queda_baja_con_cada_adjunto_leido():
+    sender, lector = SenderEspia(), LectorEspia(contenido=b"x" * 100)
+    dos = json.dumps(
+        {
+            **EVENTO_VALIDO,
+            "datos": {
+                **EVENTO_VALIDO["datos"],
+                "adjuntos": [
+                    REFERENCIA,
+                    {**REFERENCIA, "nombre": "B.pdf", "objeto": "polizas/2.pdf"},
+                ],
+            },
+        }
+    ).encode()
+
+    await _con_lector(sender, lector, max_adjuntos_bytes=1000).procesar(dos, {}, "m-1")
+
+    assert lector.pedidos == [("polizas/1.pdf", 1000), ("polizas/2.pdf", 900)]

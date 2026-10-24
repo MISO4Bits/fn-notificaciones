@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
 import time
@@ -88,10 +89,20 @@ class ResendEmailSender:
         }
         if self._reply_to:
             cuerpo["reply_to"] = self._reply_to
+        if correo.adjuntos:
+            cuerpo["attachments"] = [
+                {
+                    "filename": a.nombre,
+                    "content": base64.b64encode(a.contenido).decode(),
+                    "content_type": a.content_type,
+                }
+                for a in correo.adjuntos
+            ]
         # Qué se manda, sin datos personales: dominios, tamaños e identificadores.
         logger.info(
             "resend: enviando plantilla=%s correo_id=%s remitente_dominio=%s "
-            "destino_dominio=%s reply_to=%s asunto_chars=%s html_bytes=%s texto_bytes=%s",
+            "destino_dominio=%s reply_to=%s asunto_chars=%s html_bytes=%s texto_bytes=%s "
+            "adjuntos=%d",
             correo.plantilla,
             correo.id,
             _dominio(self._remitente),
@@ -100,6 +111,7 @@ class ResendEmailSender:
             len(correo.asunto),
             len(correo.cuerpo_html.encode()),
             len(correo.cuerpo_texto.encode()),
+            len(correo.adjuntos),
         )
         inicio = time.perf_counter()
         try:

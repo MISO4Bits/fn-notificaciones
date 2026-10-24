@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # Intentos de envío por mensaje antes de devolverlo a Pub/Sub (BITS-119 AC-6).
     intentos_envio: int = 3
 
+    # Adjuntos (BITS-101): archivos que ya están en un bucket (el PDF de la póliza). Solo se lee
+    # de este bucket: un evento no puede pedirle a la función archivos de cualquier otro.
+    adjuntos_bucket: str | None = None
+    adjuntos_max_bytes: int = 10 * 1024 * 1024
+
     # Observabilidad (DI-008): la función corre fuera del cluster, así que exporta
     # directo a Grafana Cloud por OTLP/HTTP. El destino y las credenciales salen de
     # las variables estándar OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_HEADERS.
