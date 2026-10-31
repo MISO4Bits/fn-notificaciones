@@ -49,6 +49,32 @@ paths:
         '503':
           description: El envío falló; Pub/Sub debe reentregar el mensaje.
 
+  /push:
+    post:
+      operationId: recibirAvisoPush
+      tags: [Pub/Sub]
+      summary: Recibe un mensaje de la suscripción push de avisos y lo entrega al teléfono
+      description: |
+        Una suscripción *push* de Pub/Sub filtrada por `tipo = EnviarPush` entrega aquí cada
+        aviso. La función lo entrega por Firebase Cloud Messaging, un mensaje por dispositivo.
+
+        Un token que Firebase ya no conoce (`UNREGISTERED`) o un rechazo definitivo
+        (`INVALID_ARGUMENT`) se anotan y se confirma el mensaje: reintentar no los arregla, y no
+        deben impedir que los demás dispositivos reciban el aviso. Un fallo transitorio (límite,
+        proveedor caído, permisos pendientes) se reintenta y, si se agotan los intentos, responde
+        `503` para que Pub/Sub reentregue; la etiqueta del aviso (el `id` del evento) hace que el
+        teléfono reemplace el aviso en vez de mostrarlo dos veces.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SobrePush' }
+      responses:
+        '204':
+          description: Mensaje confirmado (aviso entregado o descartado sin arreglo).
+        '503':
+          description: La entrega falló; Pub/Sub debe reentregar el mensaje.
+
 components:
   schemas:
     SobrePush:
@@ -130,3 +156,56 @@ components:
               bucket: { type: string }
               objeto: { type: string, description: 'Ruta del archivo en el bucket.' }
               contentType: { type: string, default: application/pdf }
+
+    EventoEnviarPush:
+      description: Contenido de `message.data` (una vez decodificado) en la ruta `/push`.
+      type: object
+      required: [tipo, datos]
+      properties:
+        tipo: { type: string, const: EnviarPush }
+        id:
+          type: string
+          description: Identificador único del evento; es la etiqueta del aviso en el teléfono.
+        ocurridoEn: { type: string, format: date-time }
+        datos: { $ref: '#/components/schemas/DatosEnviarPush' }
+      examples:
+        - tipo: EnviarPush
+          id: 8c1f6a52-6c0e-4d8e-9a7e-1c5d2f9b7a10
+          ocurridoEn: '2026-10-30T15:04:05Z'
+          datos:
+            clienteId: 7b1d3c2e-0f4a-4b8e-9c55-2a1e6d9f0b34
+            tokens: ['fcm-token-del-telefono-1']
+            titulo: Tu póliza ya está activa
+            cuerpo: Ya puedes ver tu seguro y descargar el documento.
+            ruta: { destino: seguro, id: 0c9a3a52-6c0e-4d8e-9a7e-1c5d2f9b7a10 }
+            prioridad: alta
+
+    DatosEnviarPush:
+      type: object
+      required: [tokens, titulo, cuerpo, ruta]
+      properties:
+        clienteId: { type: string, maxLength: 64 }
+        tokens:
+          type: array
+          minItems: 1
+          maxItems: 5
+          description: Tokens de Firebase de los dispositivos del cliente. Nunca se registran completos.
+          items: { type: string, pattern: '^\S+$' }
+        titulo:
+          type: string
+          minLength: 1
+          maxLength: 65
+          pattern: '^[^\r\n]+$'
+          description: Una sola línea. Sin montos ni datos de la póliza (se ve con el teléfono bloqueado).
+        cuerpo:
+          type: string
+          minLength: 1
+          maxLength: 240
+        ruta:
+          type: object
+          required: [destino, id]
+          description: Qué abre la app al tocar el aviso.
+          properties:
+            destino: { type: string, enum: [seguro], description: 'Lista cerrada de pantallas.' }
+            id: { type: string, minLength: 1, maxLength: 64, description: 'Identificador del recurso (la póliza).' }
+        prioridad: { type: string, enum: [alta, normal], default: alta }

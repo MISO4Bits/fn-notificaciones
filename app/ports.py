@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from app.domain import Adjunto, Correo, ReferenciaAdjunto
+from app.domain import Adjunto, Aviso, Correo, ReferenciaAdjunto
 
 
 @runtime_checkable
@@ -25,5 +25,16 @@ class LectorAdjuntosPort(Protocol):
 
         Lanza ``EnvioTransitorio`` si no se puede leer ahora (el bucket no responde o el
         archivo todavía no aparece) y ``EnvioRechazado`` si supera ``max_bytes``.
+        """
+        ...
+
+
+@runtime_checkable
+class PushSenderPort(Protocol):
+    async def enviar(self, aviso: Aviso, token: str) -> None:
+        """Entrega el aviso a un dispositivo.
+
+        Lanza ``EnvioTransitorio`` si conviene reintentar, ``TokenNoRegistrado`` si el
+        dispositivo ya no existe y ``EnvioRechazado`` si el proveedor no lo aceptará nunca.
         """
         ...

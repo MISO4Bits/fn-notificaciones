@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Request, Response, status
 
 from app.api.schemas import SobrePush
 from app.domain import EnvioRechazado, EnvioTransitorio, MensajeInvalido, decodificar
-from app.services import NotificacionesService
+from app.services import NotificacionesService, PushService
 from app.telemetry import vaciar
 
 logger = logging.getLogger("fn_notificaciones.api")
@@ -20,6 +20,13 @@ def get_service(request: Request) -> NotificacionesService:
 
 
 ServiceDep = Annotated[NotificacionesService, Depends(get_service)]
+
+
+def get_push(request: Request) -> PushService:
+    return request.app.state.push
+
+
+PushDep = Annotated[PushService, Depends(get_push)]
 
 
 @router.post(
@@ -54,6 +61,52 @@ async def recibir_mensaje(sobre: SobrePush, request: Request, service: ServiceDe
         enviado = await service.procesar(contenido, mensaje.attributes, mensaje.message_id)
         resultado = "enviado" if enviado else "ignorado"
     except (MensajeInvalido, EnvioRechazado) as exc:
+        resultado = "descartado"
+        logger.error("mensaje descartado id=%s motivo=%s", mensaje.message_id, exc)
+    except EnvioTransitorio as exc:
+        resultado = "reintentar"
+        logger.warning("mensaje se devuelve a Pub/Sub id=%s motivo=%s", mensaje.message_id, exc)
+        return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+    finally:
+        logger.info(
+            "mensaje procesado id=%s resultado=%s duracion_ms=%d",
+            mensaje.message_id,
+            resultado,
+            (time.perf_counter() - inicio) * 1000,
+        )
+        vaciar(request.app.state.telemetry)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/push",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Pub/Sub"],
+    responses={503: {"description": "La entrega falló; Pub/Sub debe reentregar el mensaje."}},
+)
+async def recibir_aviso_push(sobre: SobrePush, request: Request, service: PushDep) -> Response:
+    """Endpoint de la suscripción *push* de los avisos (``tipo = EnviarPush``). Mismas reglas de
+    respuesta que ``POST /``: un mensaje que nunca podrá entregarse se confirma y se anota.
+    Los tokens muertos o rechazados tampoco hacen reintentar: se registran y se confirma."""
+    mensaje = sobre.message
+    logger.info(
+        "mensaje recibido id=%s intento_entrega=%s publicado=%s tipo=%s bytes_base64=%s",
+        mensaje.message_id,
+        sobre.delivery_attempt if sobre.delivery_attempt is not None else "-",
+        mensaje.publish_time or "-",
+        mensaje.attributes.get("tipo", "-"),
+        len(mensaje.data),
+    )
+    inicio = time.perf_counter()
+    resultado = "error"
+    try:
+        contenido = decodificar(mensaje.data)
+        entrega = await service.procesar(contenido, mensaje.attributes, mensaje.message_id)
+        if entrega is None:
+            resultado = "ignorado"
+        else:
+            resultado = "enviado" if entrega.enviados else "descartado"
+    except MensajeInvalido as exc:
         resultado = "descartado"
         logger.error("mensaje descartado id=%s motivo=%s", mensaje.message_id, exc)
     except EnvioTransitorio as exc:
