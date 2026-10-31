@@ -8,11 +8,11 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, Response
 
-from app.adapters.factory import build_lector, build_sender
+from app.adapters.factory import build_lector, build_push_sender, build_sender
 from app.api.routes import router
 from app.config import Settings, get_settings
 from app.logging_utils import SinRuidoDeHealthCheck
-from app.services import NotificacionesService
+from app.services import NotificacionesService, PushService
 from app.telemetry import setup_telemetry, shutdown_telemetry
 
 SPEC_PATH = Path(__file__).resolve().parents[2] / "openapi" / "openapi.yaml"
@@ -34,17 +34,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_adjuntos_bytes=settings.adjuntos_max_bytes,
     )
 
+    push_sender = build_push_sender(settings)
+    push = PushService(
+        push_sender, intentos=settings.intentos_envio, concurrencia=settings.push_concurrencia
+    )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         yield
-        aclose = getattr(sender, "aclose", None)
-        if aclose is not None:
-            await aclose()
+        for adaptador in (sender, push_sender):
+            aclose = getattr(adaptador, "aclose", None)
+            if aclose is not None:
+                await aclose()
         shutdown_telemetry(telemetry)
 
     app = FastAPI(title="fn-notificaciones", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.service = service
+    app.state.push = push
     app.state.telemetry = telemetry
 
     @app.exception_handler(RequestValidationError)

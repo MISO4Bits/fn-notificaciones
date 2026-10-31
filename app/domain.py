@@ -10,11 +10,13 @@ import base64
 import binascii
 import json
 from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic.alias_generators import to_camel
 
 EVENTO_ENVIAR_CORREO = "EnviarCorreo"
+EVENTO_ENVIAR_PUSH = "EnviarPush"
 
 _EMAIL = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
 
@@ -29,6 +31,11 @@ class EnvioRechazado(Exception):
 
 class EnvioTransitorio(Exception):
     """El envío falló por algo que puede resolverse solo (red, límite, proveedor caído)."""
+
+
+class TokenNoRegistrado(EnvioRechazado):
+    """Firebase ya no conoce el token (la app se desinstaló o borró sus datos). Es un rechazo
+    definitivo de ese dispositivo, no del aviso: los demás dispositivos siguen su camino."""
 
 
 @dataclass(frozen=True)
@@ -136,3 +143,89 @@ def parsear_evento(contenido: bytes, id_mensaje: str) -> Correo | None:
 
 def _campos(error: ValidationError) -> str:
     return ", ".join(sorted({".".join(str(p) for p in e["loc"]) for e in error.errors()}))
+
+
+# --- Avisos push (BITS-229) ---
+
+MAX_TOKENS_POR_AVISO = 5
+# Adonde puede llevar un aviso al abrirse. Una lista cerrada: el evento no decide pantallas nuevas.
+DESTINOS_PUSH = ("seguro",)
+
+
+@dataclass(frozen=True)
+class Aviso:
+    """Un aviso push ya armado por quien lo publica (CoreTransaccional): textos, a qué
+    dispositivos va y qué abrir al tocarlo. La función solo lo entrega."""
+
+    id: str
+    tokens: tuple[str, ...]
+    titulo: str
+    cuerpo: str
+    destino: str
+    destino_id: str
+    prioridad: Literal["alta", "normal"] = "alta"
+    cliente_id: str | None = None
+
+
+class _RutaIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    destino: Literal["seguro"]
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[\w-]+$")
+
+
+class _DatosPush(BaseModel):
+    """``datos`` del evento ``EnviarPush`` (contrato con CoreTransaccional)."""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
+
+    cliente_id: str | None = Field(default=None, max_length=64)
+    tokens: list[str] = Field(min_length=1, max_length=MAX_TOKENS_POR_AVISO)
+    titulo: str = Field(min_length=1, max_length=65, pattern=r"^[^\r\n]+$")
+    cuerpo: str = Field(min_length=1, max_length=240)
+    ruta: _RutaIn
+    prioridad: Literal["alta", "normal"] = "alta"
+
+
+class _EventoPush(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="ignore")
+
+    tipo: str
+    id: str | None = None
+    datos: _DatosPush
+
+
+def parsear_aviso(contenido: bytes, id_mensaje: str) -> Aviso | None:
+    """Convierte el cuerpo del mensaje en un ``Aviso``.
+
+    Devuelve ``None`` si el evento es de otro tipo (no es para esta ruta). Lanza
+    ``MensajeInvalido`` si le faltan datos o no se puede leer; el motivo no incluye valores del
+    mensaje, que traen tokens de dispositivos.
+    """
+    try:
+        bruto = json.loads(contenido)
+        if isinstance(bruto, dict) and bruto.get("tipo") != EVENTO_ENVIAR_PUSH:
+            return None
+        evento = _EventoPush.model_validate(bruto)
+    except (ValueError, UnicodeDecodeError) as exc:
+        motivo = _campos(exc) if isinstance(exc, ValidationError) else "no es JSON"
+        raise MensajeInvalido(f"El evento no es válido ({motivo})") from None
+    d = evento.datos
+    tokens = tuple(dict.fromkeys(d.tokens))
+    if any(not t or any(c.isspace() for c in t) for t in tokens):
+        raise MensajeInvalido("El evento no es válido (tokens)")
+    return Aviso(
+        id=evento.id or id_mensaje,
+        tokens=tokens,
+        titulo=d.titulo,
+        cuerpo=d.cuerpo,
+        destino=d.ruta.destino,
+        destino_id=d.ruta.id,
+        prioridad=d.prioridad,
+        cliente_id=d.cliente_id,
+    )
+
+
+def token_corto(token: str) -> str:
+    """Lo único del token que se escribe en los logs: identifica al dispositivo sin exponerlo."""
+    return f"…{token[-6:]}"

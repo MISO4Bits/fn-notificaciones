@@ -49,6 +49,10 @@ curl -i -X POST http://localhost:8200/ -H 'content-type: application/json' \
 | `FN_RESEND_API_KEY` | — | obligatoria con `resend`; sale de Secret Manager, nunca del repo |
 | `FN_REMITENTE` | `Solventa <no-reply@notificaciones.solventa4bits.com>` | |
 | `FN_REPLY_TO` | — | alias al que responde quien contesta el correo |
+| `FN_PUSH_BACKEND` | `logging` | avisos push: `logging` (simulado) \| `fcm` (Firebase Cloud Messaging) |
+| `FN_FCM_PROJECT_ID` | — | proyecto de Firebase; obligatoria con `fcm` |
+| `FN_PUSH_TTL_S` | `86400` | cuánto vive el aviso en Firebase si el teléfono está apagado o sin red |
+| `FN_PUSH_CONCURRENCIA` | `5` | envíos simultáneos por mensaje |
 | `FN_INTENTOS_ENVIO` | `3` | intentos por mensaje antes de devolverlo a Pub/Sub |
 | `FN_OTEL_ENABLED` | `false` | con `true` exporta trazas y logs; usa `OTEL_EXPORTER_OTLP_ENDPOINT` y `OTEL_EXPORTER_OTLP_HEADERS` |
 
@@ -66,3 +70,22 @@ por ejemplo el PDF de la póliza que genera `fn-documentos`. La función los lee
 manda adjuntos (máximo 10 MiB en total, `FN_ADJUNTOS_MAX_BYTES`). Solo lee del bucket configurado: un
 evento no puede pedirle archivos de cualquier otro. Su cuenta de servicio necesita
 `roles/storage.objectViewer` sobre ese bucket.
+
+## Avisos push (BITS-229)
+
+Una segunda suscripción *push* de Pub/Sub (filtro `tipo = EnviarPush`) llama a `POST /push`. El
+evento llega completo desde CoreTransaccional: hasta 5 `tokens` de dispositivos, `titulo`, `cuerpo`
+y la `ruta` que abre la app (`seguro` + id de la póliza). La función manda un mensaje por token,
+en paralelo, por la interfaz HTTP v1 de Firebase Cloud Messaging, con prioridad alta, vida de 24
+horas y como etiqueta el `id` del evento (una reentrega de Pub/Sub reemplaza el aviso en vez de
+duplicarlo).
+
+| Respuesta de Firebase | Qué hace |
+|---|---|
+| `UNREGISTERED` | token muerto: se registra y se confirma; los demás dispositivos siguen |
+| `INVALID_ARGUMENT`, `SENDER_ID_MISMATCH` | rechazo definitivo: se registra y se confirma |
+| 429, 5xx, permisos pendientes | transitorio: se reintenta y, si se agotan los intentos, `503` para que Pub/Sub reentregue |
+
+Se autentica con las credenciales de su cuenta de servicio (sin llaves), que necesita
+`roles/firebasecloudmessaging.admin`. Nunca se escribe el token completo: solo sus últimos
+caracteres.

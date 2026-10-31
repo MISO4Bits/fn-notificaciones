@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from app.adapters.logging_push import LoggingPushSender
 from app.adapters.logging_sender import LoggingEmailSender
 from app.adapters.resend_sender import ResendEmailSender
 from app.config import Settings
-from app.ports import EmailSenderPort, LectorAdjuntosPort
+from app.ports import EmailSenderPort, LectorAdjuntosPort, PushSenderPort
 
 
 def build_sender(settings: Settings) -> EmailSenderPort:
@@ -30,3 +31,17 @@ def build_lector(settings: Settings) -> LectorAdjuntosPort | None:
     from app.adapters.gcs_lector import LectorGcs  # pragma: no cover - requiere GCP real
 
     return LectorGcs()  # pragma: no cover
+
+
+def build_push_sender(settings: Settings) -> PushSenderPort:
+    if settings.push_backend == "logging":
+        return LoggingPushSender()
+    if settings.push_backend == "fcm":
+        if not settings.fcm_project_id:
+            raise ValueError("FN_FCM_PROJECT_ID es obligatorio con FN_PUSH_BACKEND=fcm")
+        from app.adapters.fcm_sender import FcmPushSender
+
+        return FcmPushSender(
+            settings.fcm_project_id, ttl_s=settings.push_ttl_s, timeout_s=settings.fcm_timeout_s
+        )
+    raise ValueError(f"push_backend no soportado: {settings.push_backend}")

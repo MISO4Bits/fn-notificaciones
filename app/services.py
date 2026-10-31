@@ -5,19 +5,23 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from opentelemetry import propagate, trace
 from opentelemetry.trace import SpanKind
 
 from app.domain import (
     Adjunto,
+    Aviso,
     Correo,
     EnvioRechazado,
     EnvioTransitorio,
+    TokenNoRegistrado,
+    parsear_aviso,
     parsear_evento,
+    token_corto,
 )
-from app.ports import EmailSenderPort, LectorAdjuntosPort
+from app.ports import EmailSenderPort, LectorAdjuntosPort, PushSenderPort
 
 logger = logging.getLogger("fn_notificaciones.envio")
 tracer = trace.get_tracer("fn_notificaciones")
@@ -117,3 +121,114 @@ class NotificacionesService:
                 len(adjunto.contenido),
             )
         return replace(correo, adjuntos=tuple(adjuntos))
+
+
+@dataclass(frozen=True)
+class ResultadoPush:
+    """Qué pasó con cada dispositivo del aviso."""
+
+    enviados: int = 0
+    tokens_muertos: int = 0
+    rechazados: int = 0
+
+
+class PushService:
+    """Caso de uso: recibir un mensaje de Pub/Sub y entregar el aviso push que trae."""
+
+    def __init__(
+        self,
+        sender: PushSenderPort,
+        *,
+        intentos: int = 3,
+        concurrencia: int = 5,
+        dormir: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self._sender = sender
+        self._intentos = max(1, intentos)
+        self._concurrencia = max(1, concurrencia)
+        self._dormir = dormir
+
+    async def procesar(
+        self, contenido: bytes, atributos: dict[str, str], id_mensaje: str
+    ) -> ResultadoPush | None:
+        """Entrega el aviso a cada dispositivo. ``None`` si el mensaje no era para esta ruta.
+
+        Un token muerto o rechazado no detiene a los demás. Lanza ``MensajeInvalido`` si el
+        mensaje no se puede leer y ``EnvioTransitorio`` si algún dispositivo agotó los intentos
+        (Pub/Sub reentrega; la etiqueta del aviso evita que el teléfono lo muestre dos veces).
+        """
+        aviso = parsear_aviso(contenido, id_mensaje)
+        if aviso is None:
+            logger.info("mensaje ignorado: no es un EnviarPush")
+            return None
+        logger.info(
+            "push a entregar aviso_id=%s cliente_id=%s destino=%s dispositivos=%d traceparent=%s",
+            aviso.id,
+            aviso.cliente_id or "-",
+            aviso.destino,
+            len(aviso.tokens),
+            "si" if "traceparent" in atributos else "no",
+        )
+        contexto = propagate.extract(atributos)
+        with tracer.start_as_current_span(
+            "notificaciones.enviar_push",
+            context=contexto,
+            kind=SpanKind.CONSUMER,
+            attributes={"push.dispositivos": len(aviso.tokens), "push.destino": aviso.destino},
+        ):
+            cupo = asyncio.Semaphore(self._concurrencia)
+
+            async def _con_cupo(token: str) -> str:
+                async with cupo:
+                    return await self._entregar(aviso, token)
+
+            resultados = await asyncio.gather(
+                *(_con_cupo(t) for t in aviso.tokens), return_exceptions=True
+            )
+        transitorio = next((r for r in resultados if isinstance(r, EnvioTransitorio)), None)
+        if transitorio is not None:
+            raise transitorio
+        inesperado = next((r for r in resultados if isinstance(r, BaseException)), None)
+        if inesperado is not None:
+            raise inesperado
+        return ResultadoPush(
+            enviados=resultados.count("enviado"),
+            tokens_muertos=resultados.count("token_muerto"),
+            rechazados=resultados.count("rechazado"),
+        )
+
+    async def _entregar(self, aviso: Aviso, token: str) -> str:
+        for intento in range(1, self._intentos + 1):
+            try:
+                await self._sender.enviar(aviso, token)
+            except TokenNoRegistrado:
+                logger.info(
+                    "token muerto aviso_id=%s token=%s: la app ya no lo usa",
+                    aviso.id,
+                    token_corto(token),
+                )
+                return "token_muerto"
+            except EnvioRechazado as exc:
+                logger.error(
+                    "aviso rechazado aviso_id=%s token=%s motivo=%s",
+                    aviso.id,
+                    token_corto(token),
+                    exc,
+                )
+                return "rechazado"
+            except EnvioTransitorio as exc:
+                logger.warning(
+                    "envío fallido aviso_id=%s token=%s intento=%s/%s motivo=%s",
+                    aviso.id,
+                    token_corto(token),
+                    intento,
+                    self._intentos,
+                    exc,
+                )
+                if intento == self._intentos:
+                    raise
+                await self._dormir(0.2 * 2 ** (intento - 1))
+            else:
+                logger.info("push enviado aviso_id=%s token=%s", aviso.id, token_corto(token))
+                return "enviado"
+        raise AssertionError("el bucle siempre retorna o lanza")  # pragma: no cover

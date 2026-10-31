@@ -30,6 +30,18 @@ class Settings(BaseSettings):
     adjuntos_bucket: str | None = None
     adjuntos_max_bytes: int = 10 * 1024 * 1024
 
+    # Avisos push (BITS-229): "logging" (simulado: solo registra) | "fcm" (Firebase Cloud
+    # Messaging, interfaz HTTP v1). Usa las credenciales de la cuenta de servicio de la función
+    # (sin llaves en archivos); necesita el rol roles/firebasecloudmessaging.admin.
+    push_backend: str = "logging"
+    # Proyecto de Firebase: el mismo proyecto de Google Cloud del ambiente.
+    fcm_project_id: str | None = None
+    fcm_timeout_s: float = 5.0
+    # Cuánto vive el aviso en Firebase si el teléfono está apagado o sin red.
+    push_ttl_s: int = 24 * 60 * 60
+    # Envíos simultáneos por mensaje (un aviso lleva hasta 5 dispositivos).
+    push_concurrencia: int = 5
+
     # Observabilidad (DI-008): la función corre fuera del cluster, así que exporta
     # directo a Grafana Cloud por OTLP/HTTP. El destino y las credenciales salen de
     # las variables estándar OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_HEADERS.
